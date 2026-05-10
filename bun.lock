@@ -1,8 +1,9 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
-      "name": "@mohak34/opencode-notifier",
+      "name": "opencode-telegram-notifications",
       "dependencies": {
         "is-wsl": "^3.1.0",
         "node-notifier": "^10.0.1",
