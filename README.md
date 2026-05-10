@@ -24,7 +24,7 @@ And add this to your `tui.json`:
 
 ```json
 {
-  "plugin": ["opencode-telegram-notifications"]
+  "plugin": ["opencode-telegram-notifications/tui"]
 }
 ```
 

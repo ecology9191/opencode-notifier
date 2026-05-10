@@ -115,6 +115,7 @@ describe("sendTelegramNotification", () => {
     expect(body.text).toContain("Project: notifier")
     expect(body.text).toContain("Agent: builder")
     expect(body.text).toContain("Event: complete")
+    expect(body.link_preview_options).toEqual({ is_disabled: true })
   })
 
   test("sends to multiple authorized recipients", async () => {
@@ -159,7 +160,9 @@ describe("sendTelegramNotification", () => {
       "Task finished"
     )).resolves.toBeUndefined()
 
-    expect(console.warn).toHaveBeenCalledWith("Telegram notification failed")
+    const warning = (console.warn as any).mock.calls[0]
+    expect(warning[0]).toBe("Telegram notification failed")
+    expect(warning[1]).toMatchObject({ chatId: 123, status: 400 })
   })
 
   test("warns without throwing when Telegram API request rejects", async () => {
@@ -175,6 +178,28 @@ describe("sendTelegramNotification", () => {
       "Task finished"
     )).resolves.toBeUndefined()
 
-    expect(console.warn).toHaveBeenCalledWith("Telegram notification failed")
+    const warning = (console.warn as any).mock.calls[0]
+    expect(warning[0]).toBe("Telegram notification failed")
+    expect(warning[1]).toMatchObject({ chatId: 123, error: "network down" })
+  })
+
+  test("aborts stalled Telegram API requests", async () => {
+    globalThis.fetch = mock(async (_url: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")))
+    })) as unknown as typeof fetch
+    console.warn = mock(() => {}) as unknown as typeof console.warn
+
+    await expect(sendTelegramNotification(
+      telegramConfig(),
+      "complete",
+      "Done",
+      "Task finished",
+      undefined,
+      { timeoutMs: 1 }
+    )).resolves.toBeUndefined()
+
+    const warning = (console.warn as any).mock.calls[0]
+    expect(warning[0]).toBe("Telegram notification failed")
+    expect(warning[1]).toMatchObject({ chatId: 123, error: "aborted" })
   })
 })

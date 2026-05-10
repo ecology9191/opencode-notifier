@@ -15,11 +15,13 @@ function readRawConfig(): JsonObject {
     return {}
   }
 
-  try {
-    return asObject(JSON.parse(readFileSync(configPath, "utf-8"))) ?? {}
-  } catch {
-    return {}
+  const parsed = JSON.parse(readFileSync(configPath, "utf-8"))
+  const rawConfig = asObject(parsed)
+  if (!rawConfig) {
+    throw new Error(`Expected ${configPath} to contain a JSON object`)
   }
+
+  return rawConfig
 }
 
 function writeRawConfig(config: JsonObject): void {
