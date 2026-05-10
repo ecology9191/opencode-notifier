@@ -22,6 +22,15 @@ export interface EventConfig {
   notification: boolean
   command: boolean
   bell: boolean
+  telegram: boolean
+}
+
+export interface TelegramConfig {
+  enabled: boolean
+  botToken: string | null
+  longPolling: boolean
+  authorizedUserIds: number[]
+  authorizedChatIds: number[]
 }
 
 export interface CommandConfig {
@@ -58,6 +67,7 @@ export interface NotifierConfig {
   linux: LinuxConfig
   minDuration: number
   command: CommandConfig
+  telegram: TelegramConfig
   events: {
     permission: EventConfig
     complete: EventConfig
@@ -117,6 +127,7 @@ const DEFAULT_EVENT_CONFIG: EventConfig = {
   notification: true,
   command: true,
   bell: false,
+  telegram: true,
 }
 
 const DEFAULT_CONFIG: NotifierConfig = {
@@ -140,18 +151,25 @@ const DEFAULT_CONFIG: NotifierConfig = {
     path: "",
     minDuration: 0,
   },
+  telegram: {
+    enabled: false,
+    botToken: null,
+    longPolling: true,
+    authorizedUserIds: [],
+    authorizedChatIds: [],
+  },
   events: {
     permission: { ...DEFAULT_EVENT_CONFIG },
     complete: { ...DEFAULT_EVENT_CONFIG },
-    subagent_complete: { ...DEFAULT_EVENT_CONFIG, sound: false, notification: false },
+    subagent_complete: { ...DEFAULT_EVENT_CONFIG, sound: false, notification: false, telegram: false },
     error: { ...DEFAULT_EVENT_CONFIG },
     question: { ...DEFAULT_EVENT_CONFIG },
     interrupted: { ...DEFAULT_EVENT_CONFIG },
-    user_cancelled: { ...DEFAULT_EVENT_CONFIG, sound: false, notification: false },
+    user_cancelled: { ...DEFAULT_EVENT_CONFIG, sound: false, notification: false, telegram: false },
     plan_exit: { ...DEFAULT_EVENT_CONFIG },
-    session_started: { ...DEFAULT_EVENT_CONFIG, notification: false },
-    user_message: { ...DEFAULT_EVENT_CONFIG, notification: false },
-    client_connected: { ...DEFAULT_EVENT_CONFIG, notification: false },
+    session_started: { ...DEFAULT_EVENT_CONFIG, notification: false, telegram: false },
+    user_message: { ...DEFAULT_EVENT_CONFIG, notification: false, telegram: false },
+    client_connected: { ...DEFAULT_EVENT_CONFIG, notification: false, telegram: false },
   },
   messages: {
     permission: "Session needs permission: {sessionTitle}",
@@ -206,8 +224,131 @@ export function getStatePath(): string {
   return join(dirname(configPath), "opencode-notifier-state.json")
 }
 
+export function getEnvPath(configPath = getConfigPath()): string {
+  if (process.env.OPENCODE_NOTIFIER_ENV_PATH) {
+    return process.env.OPENCODE_NOTIFIER_ENV_PATH
+  }
+
+  return join(dirname(configPath), "opencode-notifier.env")
+}
+
+function parseEnvFile(path: string): Record<string, string> {
+  if (!existsSync(path)) {
+    return {}
+  }
+
+  try {
+    const env: Record<string, string> = {}
+    const fileContent = readFileSync(path, "utf-8")
+
+    for (const line of fileContent.split(/\r?\n/)) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith("#")) {
+        continue
+      }
+
+      const equalsIndex = trimmed.indexOf("=")
+      if (equalsIndex === -1) {
+        continue
+      }
+
+      const key = trimmed.slice(0, equalsIndex).trim()
+      let value = trimmed.slice(equalsIndex + 1).trim()
+      if (!key) {
+        continue
+      }
+
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1)
+      }
+
+      env[key] = value
+    }
+
+    return env
+  } catch {
+    return {}
+  }
+}
+
+function getEnvValue(key: string, envFile: Record<string, string>): string | undefined {
+  return process.env[key] ?? envFile[key]
+}
+
+function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
+  if (value === undefined) {
+    return defaultValue
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false
+    default:
+      return defaultValue
+  }
+}
+
+function parseBooleanConfig(value: unknown, defaultValue: boolean): boolean {
+  return typeof value === "boolean" ? value : defaultValue
+}
+
+export function isValidTelegramBotToken(value: string | null | undefined): value is string {
+  return typeof value === "string" && /^\d+:[A-Za-z0-9_-]+$/.test(value)
+}
+
+function parseTelegramBotToken(value: string | undefined): string | null {
+  const token = value?.trim()
+  return token && isValidTelegramBotToken(token) ? token : null
+}
+
+function parseSafeIntegerList(value: string | undefined, isAllowed: (value: number) => boolean): number[] {
+  if (!value) {
+    return []
+  }
+
+  const numbers: number[] = []
+  const seen = new Set<number>()
+
+  for (const part of value.split(/[\s,]+/)) {
+    const trimmed = part.trim()
+    if (!/^[+-]?\d+$/.test(trimmed)) {
+      continue
+    }
+
+    const number = Number(trimmed)
+    if (!Number.isSafeInteger(number) || !isAllowed(number) || seen.has(number)) {
+      continue
+    }
+
+    numbers.push(number)
+    seen.add(number)
+  }
+
+  return numbers
+}
+
+function parseTelegramConfig(configPath: string, userConfig: { telegram?: { enabled?: unknown } } = {}): TelegramConfig {
+  const envFile = parseEnvFile(getEnvPath(configPath))
+
+  return {
+    enabled: parseBooleanConfig(userConfig.telegram?.enabled, DEFAULT_CONFIG.telegram.enabled),
+    botToken: parseTelegramBotToken(getEnvValue("TELEGRAM_BOT_TOKEN", envFile)),
+    longPolling: parseBooleanEnv(getEnvValue("TELEGRAM_LONG_POLLING", envFile), DEFAULT_CONFIG.telegram.longPolling),
+    authorizedUserIds: parseSafeIntegerList(getEnvValue("TELEGRAM_AUTHORIZED_USER_IDS", envFile), (id) => id > 0),
+    authorizedChatIds: parseSafeIntegerList(getEnvValue("TELEGRAM_AUTHORIZED_CHAT_IDS", envFile), (id) => id !== 0),
+  }
+}
+
 function parseEventConfig(
-  userEvent: boolean | { sound?: boolean; notification?: boolean; command?: boolean; bell?: boolean } | undefined,
+  userEvent: boolean | { sound?: unknown; notification?: unknown; command?: unknown; bell?: unknown; telegram?: unknown } | undefined,
   defaultConfig: EventConfig
 ): EventConfig {
   if (userEvent === undefined) {
@@ -220,14 +361,16 @@ function parseEventConfig(
       notification: userEvent,
       command: userEvent,
       bell: defaultConfig.bell,
+      telegram: userEvent,
     }
   }
 
   return {
-    sound: userEvent.sound ?? defaultConfig.sound,
-    notification: userEvent.notification ?? defaultConfig.notification,
-    command: userEvent.command ?? defaultConfig.command,
-    bell: userEvent.bell ?? defaultConfig.bell,
+    sound: parseBooleanConfig(userEvent.sound, defaultConfig.sound),
+    notification: parseBooleanConfig(userEvent.notification, defaultConfig.notification),
+    command: parseBooleanConfig(userEvent.command, defaultConfig.command),
+    bell: parseBooleanConfig(userEvent.bell, defaultConfig.bell),
+    telegram: parseBooleanConfig(userEvent.telegram, defaultConfig.telegram),
   }
 }
 
@@ -251,22 +394,26 @@ export function loadConfig(): NotifierConfig {
   const configPath = getConfigPath()
 
   if (!existsSync(configPath)) {
-    return DEFAULT_CONFIG
+    return {
+      ...DEFAULT_CONFIG,
+      telegram: parseTelegramConfig(configPath),
+    }
   }
 
   try {
     const fileContent = readFileSync(configPath, "utf-8")
     const userConfig = JSON.parse(fileContent)
 
-    const globalSound = userConfig.sound ?? DEFAULT_CONFIG.sound
-    const globalNotification = userConfig.notification ?? DEFAULT_CONFIG.notification
-    const globalBell = userConfig.bell ?? DEFAULT_CONFIG.bell
+    const globalSound = parseBooleanConfig(userConfig.sound, DEFAULT_CONFIG.sound)
+    const globalNotification = parseBooleanConfig(userConfig.notification, DEFAULT_CONFIG.notification)
+    const globalBell = parseBooleanConfig(userConfig.bell, DEFAULT_CONFIG.bell)
 
     const defaultWithGlobal: EventConfig = {
       sound: globalSound,
       notification: globalNotification,
       command: true,
       bell: globalBell,
+      telegram: globalNotification,
     }
 
     const userCommand = userConfig.command ?? {}
@@ -314,18 +461,19 @@ export function loadConfig(): NotifierConfig {
         args: commandArgs,
         minDuration: commandMinDuration,
       },
+      telegram: parseTelegramConfig(configPath, userConfig),
       events: {
         permission: parseEventConfig(userConfig.events?.permission ?? userConfig.permission, defaultWithGlobal),
         complete: parseEventConfig(userConfig.events?.complete ?? userConfig.complete, defaultWithGlobal),
-        subagent_complete: parseEventConfig(userConfig.events?.subagent_complete ?? userConfig.subagent_complete, { sound: false, notification: false, command: true, bell: false }),
+        subagent_complete: parseEventConfig(userConfig.events?.subagent_complete ?? userConfig.subagent_complete, { sound: false, notification: false, command: true, bell: false, telegram: false }),
         error: parseEventConfig(userConfig.events?.error ?? userConfig.error, defaultWithGlobal),
         question: parseEventConfig(userConfig.events?.question ?? userConfig.question, defaultWithGlobal),
         interrupted: parseEventConfig(userConfig.events?.interrupted ?? userConfig.interrupted, defaultWithGlobal),
-        user_cancelled: parseEventConfig(userConfig.events?.user_cancelled ?? userConfig.user_cancelled, { sound: false, notification: false, command: true, bell: false }),
+        user_cancelled: parseEventConfig(userConfig.events?.user_cancelled ?? userConfig.user_cancelled, { sound: false, notification: false, command: true, bell: false, telegram: false }),
         plan_exit: parseEventConfig(userConfig.events?.plan_exit ?? userConfig.plan_exit, defaultWithGlobal),
-        session_started: parseEventConfig(userConfig.events?.session_started ?? userConfig.session_started, { ...defaultWithGlobal, notification: false }),
-        user_message: parseEventConfig(userConfig.events?.user_message ?? userConfig.user_message, { ...defaultWithGlobal, notification: false }),
-        client_connected: parseEventConfig(userConfig.events?.client_connected ?? userConfig.client_connected, { ...defaultWithGlobal, notification: false }),
+        session_started: parseEventConfig(userConfig.events?.session_started ?? userConfig.session_started, { ...defaultWithGlobal, notification: false, telegram: false }),
+        user_message: parseEventConfig(userConfig.events?.user_message ?? userConfig.user_message, { ...defaultWithGlobal, notification: false, telegram: false }),
+        client_connected: parseEventConfig(userConfig.events?.client_connected ?? userConfig.client_connected, { ...defaultWithGlobal, notification: false, telegram: false }),
       },
       messages: {
         permission: userConfig.messages?.permission ?? DEFAULT_CONFIG.messages.permission,
@@ -371,7 +519,10 @@ export function loadConfig(): NotifierConfig {
       },
     }
   } catch {
-    return DEFAULT_CONFIG
+    return {
+      ...DEFAULT_CONFIG,
+      telegram: parseTelegramConfig(configPath),
+    }
   }
 }
 
@@ -389,6 +540,10 @@ export function isEventCommandEnabled(config: NotifierConfig, event: EventType):
 
 export function isEventBellEnabled(config: NotifierConfig, event: EventType): boolean {
   return config.events[event].bell
+}
+
+export function isEventTelegramEnabled(config: NotifierConfig, event: EventType): boolean {
+  return config.events[event].telegram
 }
 
 export function getMessage(config: NotifierConfig, event: EventType): string {

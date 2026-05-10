@@ -3,3 +3,7 @@ dist/
 *.log
 .DS_Store
 .opencode/
+.env
+.env.*
+!.env.example
+opencode-notifier.env

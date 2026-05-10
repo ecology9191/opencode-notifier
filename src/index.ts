@@ -7,6 +7,7 @@ import {
   isEventNotificationEnabled,
   isEventCommandEnabled,
   isEventBellEnabled,
+  isEventTelegramEnabled,
   getMessage,
   getSoundPath,
   getSoundVolume,
@@ -19,6 +20,7 @@ import { sendNotification } from "./notify"
 import { playSound } from "./sound"
 import { ringBell } from "./bell"
 import { runCommand } from "./command"
+import { sendTelegramNotification } from "./telegram"
 import { isTerminalFocused, focusTerminal, captureStartupWindowId, isKDEJumpBackSupported } from "./focus"
 import { shouldSuppressPermissionAlert, prunePermissionAlertState } from "./permission-dedupe"
 
@@ -183,19 +185,24 @@ async function handleEvent(
   const turn = incrementTurnCount()
 
   const rawMessage = getMessage(config, eventType)
-  const message = interpolateMessage(rawMessage, {
-    sessionTitle: config.showSessionTitle ? sessionTitle : null,
-    agentName,
+  const messageContext = {
+    sessionTitle: config.showSessionTitle ? sessionTitle ?? null : null,
+    agentName: agentName ?? null,
     projectName,
     timestamp,
     turn,
-  })
+  }
+  const message = interpolateMessage(rawMessage, messageContext)
+  const title = getNotificationTitle(config, projectName)
 
   if (isEventNotificationEnabled(config, eventType)) {
-    const title = getNotificationTitle(config, projectName)
     const iconPath = getIconPath(config)
     const onNotificationClick = isKDEJumpBackSupported() ? () => void focusTerminal() : undefined
     promises.push(sendNotification(title, message, config.timeout, iconPath, config.notificationSystem, config.linux.grouping, onNotificationClick))
+  }
+
+  if (isEventTelegramEnabled(config, eventType)) {
+    promises.push(sendTelegramNotification(config, eventType, title, message, messageContext))
   }
 
   if (isEventSoundEnabled(config, eventType)) {

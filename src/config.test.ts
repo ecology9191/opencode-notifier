@@ -5,6 +5,14 @@ import { homedir } from "os"
 
 const testConfigDir = join(homedir(), ".config", "opencode-test")
 const testConfigPath = join(testConfigDir, "opencode-notifier.json")
+const testEnvPath = join(testConfigDir, "opencode-notifier.env")
+const telegramEnvKeys = [
+  "OPENCODE_NOTIFIER_ENV_PATH",
+  "TELEGRAM_BOT_TOKEN",
+  "TELEGRAM_LONG_POLLING",
+  "TELEGRAM_AUTHORIZED_USER_IDS",
+  "TELEGRAM_AUTHORIZED_CHAT_IDS",
+]
 
 function setTestEnv() {
   process.env.OPENCODE_NOTIFIER_CONFIG_PATH = testConfigPath
@@ -12,6 +20,13 @@ function setTestEnv() {
 
 function unsetTestEnv() {
   delete process.env.OPENCODE_NOTIFIER_CONFIG_PATH
+  clearTelegramEnv()
+}
+
+function clearTelegramEnv() {
+  for (const key of telegramEnvKeys) {
+    delete process.env[key]
+  }
 }
 
 function cleanupTestConfig() {
@@ -35,11 +50,13 @@ describe("Config", () => {
   })
 
   beforeEach(() => {
+    clearTelegramEnv()
     cleanupTestConfig()
     mkdirSync(testConfigDir, { recursive: true })
   })
 
   afterEach(() => {
+    clearTelegramEnv()
     cleanupTestConfig()
   })
 
@@ -54,6 +71,11 @@ describe("Config", () => {
     expect(config.showProjectName).toBe(true)
     expect(config.showIcon).toBe(true)
     expect(config.notificationSystem).toBe("osascript")
+    expect(config.telegram.enabled).toBe(false)
+    expect(config.telegram.botToken).toBe(null)
+    expect(config.telegram.longPolling).toBe(true)
+    expect(config.telegram.authorizedUserIds).toEqual([])
+    expect(config.telegram.authorizedChatIds).toEqual([])
   })
 
   test("loadConfig parses existing config file", async () => {
@@ -62,7 +84,11 @@ describe("Config", () => {
       notification: true,
       bell: true,
       timeout: 10,
+      telegram: {
+        enabled: true,
+      },
     }
+    process.env.TELEGRAM_BOT_TOKEN = "123456:process-token"
     writeFileSync(testConfigPath, JSON.stringify(testConfig))
     
     const { loadConfig } = await import("./config")
@@ -72,6 +98,72 @@ describe("Config", () => {
     expect(config.notification).toBe(true)
     expect(config.bell).toBe(true)
     expect(config.timeout).toBe(10)
+    expect(config.telegram.enabled).toBe(true)
+    expect(config.telegram.botToken).toBe("123456:process-token")
+  })
+
+  test("loadConfig parses Telegram boolean env and prefers process env over env file", async () => {
+    writeFileSync(testEnvPath, "TELEGRAM_LONG_POLLING=false\nTELEGRAM_BOT_TOKEN=123456:file-token\n")
+    process.env.TELEGRAM_LONG_POLLING = "yes"
+    process.env.TELEGRAM_BOT_TOKEN = "654321:process-token"
+
+    const { loadConfig } = await import("./config")
+    const config = loadConfig()
+
+    expect(config.telegram.longPolling).toBe(true)
+    expect(config.telegram.botToken).toBe("654321:process-token")
+  })
+
+  test("loadConfig parses disabled Telegram long polling from env file", async () => {
+    writeFileSync(testEnvPath, "TELEGRAM_LONG_POLLING=0\n")
+
+    const { loadConfig } = await import("./config")
+    const config = loadConfig()
+
+    expect(config.telegram.longPolling).toBe(false)
+  })
+
+  test("loadConfig parses signed safe Telegram allowlist IDs", async () => {
+    writeFileSync(
+      testEnvPath,
+      "TELEGRAM_AUTHORIZED_USER_IDS=invalid 123, 456 -789 123 0 9007199254740992\nTELEGRAM_AUTHORIZED_CHAT_IDS=invalid -1001234567890, 42, 42, 0\n"
+    )
+
+    const { loadConfig } = await import("./config")
+    const config = loadConfig()
+
+    expect(config.telegram.authorizedUserIds).toEqual([123, 456])
+    expect(config.telegram.authorizedChatIds).toEqual([-1001234567890, 42])
+  })
+
+  test("loadConfig rejects invalid Telegram bot tokens", async () => {
+    process.env.TELEGRAM_BOT_TOKEN = "not a token"
+
+    const { loadConfig } = await import("./config")
+    const config = loadConfig()
+
+    expect(config.telegram.botToken).toBe(null)
+  })
+
+  test("loadConfig keeps empty Telegram allowlists empty", async () => {
+    writeFileSync(testEnvPath, "TELEGRAM_AUTHORIZED_USER_IDS=\nTELEGRAM_AUTHORIZED_CHAT_IDS=   \n")
+
+    const { loadConfig } = await import("./config")
+    const config = loadConfig()
+
+    expect(config.telegram.authorizedUserIds).toEqual([])
+    expect(config.telegram.authorizedChatIds).toEqual([])
+  })
+
+  test("loadConfig reads Telegram env from OPENCODE_NOTIFIER_ENV_PATH", async () => {
+    const customEnvPath = join(testConfigDir, "custom.env")
+    process.env.OPENCODE_NOTIFIER_ENV_PATH = customEnvPath
+    writeFileSync(customEnvPath, "TELEGRAM_BOT_TOKEN=123456:custom-token\n")
+
+    const { loadConfig } = await import("./config")
+    const config = loadConfig()
+
+    expect(config.telegram.botToken).toBe("123456:custom-token")
   })
 
   test("loadConfig handles missing optional fields with defaults", async () => {
@@ -116,6 +208,50 @@ describe("Config", () => {
     expect(isEventSoundEnabled(config, "error")).toBe(true)
     expect(isEventNotificationEnabled(config, "error")).toBe(false)
     expect(isEventBellEnabled(config, "error")).toBe(true)
+  })
+
+  test("loadConfig defaults event Telegram to notification defaults", async () => {
+    const { loadConfig, isEventTelegramEnabled } = await import("./config")
+    const config = loadConfig()
+
+    expect(isEventTelegramEnabled(config, "permission")).toBe(true)
+    expect(isEventTelegramEnabled(config, "subagent_complete")).toBe(false)
+    expect(isEventTelegramEnabled(config, "user_cancelled")).toBe(false)
+    expect(isEventTelegramEnabled(config, "session_started")).toBe(false)
+    expect(isEventTelegramEnabled(config, "user_message")).toBe(false)
+    expect(isEventTelegramEnabled(config, "client_connected")).toBe(false)
+  })
+
+  test("loadConfig parses per-event Telegram overrides", async () => {
+    const testConfig = {
+      events: {
+        complete: { telegram: false },
+        user_message: { telegram: true },
+      },
+    }
+    writeFileSync(testConfigPath, JSON.stringify(testConfig))
+
+    const { loadConfig, isEventTelegramEnabled } = await import("./config")
+    const config = loadConfig()
+
+    expect(isEventTelegramEnabled(config, "complete")).toBe(false)
+    expect(isEventTelegramEnabled(config, "user_message")).toBe(true)
+  })
+
+  test("loadConfig ignores non-boolean per-event Telegram overrides", async () => {
+    const testConfig = {
+      events: {
+        complete: { telegram: "false" },
+        user_message: { telegram: "true" },
+      },
+    }
+    writeFileSync(testConfigPath, JSON.stringify(testConfig))
+
+    const { loadConfig, isEventTelegramEnabled } = await import("./config")
+    const config = loadConfig()
+
+    expect(isEventTelegramEnabled(config, "complete")).toBe(true)
+    expect(isEventTelegramEnabled(config, "user_message")).toBe(false)
   })
 
   test("loadConfig keeps bell disabled for boolean event shorthand", async () => {

@@ -1,14 +1,30 @@
-# opencode-notifier
+# opencode-telegram-notifications
 
-OpenCode plugin that plays sounds and sends system notifications when permission is needed, generation completes, errors occur, or the question tool is invoked. Works on macOS, Linux, and Windows.
+OpenCode plugin that plays sounds, sends system notifications, and can send outbound Telegram notifications when permission is needed, generation completes, errors occur, or the question tool is invoked. Works on macOS, Linux, and Windows.
 
 ## Quick Start
 
-Add this to your `opencode.json`:
+Install the package with OpenCode:
+
+```bash
+opencode plugin opencode-telegram-notifications
+```
+
+This updates both server and TUI plugin config because the package exposes `./server` and `./tui` entrypoints.
+
+If you prefer manual config, add this to your `opencode.json`:
 
 ```json
 {
-  "plugin": ["@mohak34/opencode-notifier@latest"]
+  "plugin": ["opencode-telegram-notifications"]
+}
+```
+
+And add this to your `tui.json`:
+
+```json
+{
+  "plugin": ["opencode-telegram-notifications"]
 }
 ```
 
@@ -83,17 +99,20 @@ Create `~/.config/opencode/opencode-notifier.json` with the defaults:
     "args": ["--event", "{event}", "--message", "{message}"],
     "minDuration": 0
   },
+  "telegram": {
+    "enabled": false
+  },
   "events": {
-    "permission": { "sound": true, "notification": true, "command": true, "bell": false },
-    "complete": { "sound": true, "notification": true, "command": true, "bell": false },
-    "subagent_complete": { "sound": false, "notification": false, "command": true, "bell": false },
-    "error": { "sound": true, "notification": true, "command": true, "bell": false },
-    "question": { "sound": true, "notification": true, "command": true, "bell": false },
-    "user_cancelled": { "sound": false, "notification": false, "command": true, "bell": false },
-    "plan_exit": { "sound": true, "notification": true, "command": true, "bell": false },
-    "session_started": { "sound": true, "notification": false, "command": true, "bell": false },
-    "user_message": { "sound": true, "notification": false, "command": true, "bell": false },
-    "client_connected": { "sound": true, "notification": false, "command": true, "bell": false }
+    "permission": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "complete": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "subagent_complete": { "sound": false, "notification": false, "command": true, "bell": false, "telegram": false },
+    "error": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "question": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "user_cancelled": { "sound": false, "notification": false, "command": true, "bell": false, "telegram": false },
+    "plan_exit": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "session_started": { "sound": true, "notification": false, "command": true, "bell": false, "telegram": false },
+    "user_message": { "sound": true, "notification": false, "command": true, "bell": false, "telegram": false },
+    "client_connected": { "sound": true, "notification": false, "command": true, "bell": false, "telegram": false }
   },
   "messages": {
     "permission": "Session needs permission: {sessionTitle}",
@@ -174,16 +193,16 @@ Control each event separately:
 ```json
 {
   "events": {
-    "permission": { "sound": true, "notification": true, "command": true, "bell": false },
-    "complete": { "sound": true, "notification": true, "command": true, "bell": false },
-    "subagent_complete": { "sound": false, "notification": false, "command": true, "bell": false },
-    "error": { "sound": true, "notification": true, "command": true, "bell": false },
-    "question": { "sound": true, "notification": true, "command": true, "bell": false },
-    "user_cancelled": { "sound": false, "notification": false, "command": true, "bell": false },
-    "plan_exit": { "sound": true, "notification": true, "command": true, "bell": false },
-    "session_started": { "sound": true, "notification": false, "command": true, "bell": false },
-    "user_message": { "sound": true, "notification": false, "command": true, "bell": false },
-    "client_connected": { "sound": true, "notification": false, "command": true, "bell": false }
+    "permission": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "complete": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "subagent_complete": { "sound": false, "notification": false, "command": true, "bell": false, "telegram": false },
+    "error": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "question": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "user_cancelled": { "sound": false, "notification": false, "command": true, "bell": false, "telegram": false },
+    "plan_exit": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
+    "session_started": { "sound": true, "notification": false, "command": true, "bell": false, "telegram": false },
+    "user_message": { "sound": true, "notification": false, "command": true, "bell": false, "telegram": false },
+    "client_connected": { "sound": true, "notification": false, "command": true, "bell": false, "telegram": false }
   }
 }
 ```
@@ -195,6 +214,8 @@ Control each event separately:
 The `command` property controls whether the custom command (see [Custom commands](#custom-commands)) runs for that event. Defaults to `true` for all events. Set it to `false` to suppress the command for specific events without disabling it globally.
 
 `bell` is terminal-driven and may be audible, visual, both, or ignored depending on your terminal setup. Quick check: `printf '\a'`.
+
+`telegram` controls whether Telegram sends for that event when `telegram.enabled` is true and env allowlists are configured.
 
 Or use true/false for both:
 
@@ -312,6 +333,46 @@ Run your own script when something happens. Use `{event}`, `{message}`, `{sessio
 - `path` - Path to your script/executable
 - `args` - Arguments to pass, can use `{event}`, `{message}`, `{sessionTitle}`, `{agentName}`, `{projectName}`, `{timestamp}`, and `{turn}` tokens
 - `minDuration` - Skip if response was quick, avoids spam (seconds)
+
+### Telegram notifications
+
+Telegram support is outbound-only in this first pass. The plugin sends messages to allowlisted Telegram users/chats, but it does not read Telegram commands or start long-polling control loops yet.
+
+Enable Telegram in `~/.config/opencode/opencode-notifier.json`:
+
+```json
+{
+  "telegram": {
+    "enabled": true
+  },
+  "events": {
+    "permission": { "telegram": true },
+    "complete": { "telegram": true },
+    "error": { "telegram": true }
+  }
+}
+```
+
+Put secrets and allowlists in `~/.config/opencode/opencode-notifier.env`:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=123456789:your-bot-token
+TELEGRAM_LONG_POLLING=true
+TELEGRAM_AUTHORIZED_USER_IDS=<your-user-id>,<another-user-id>
+TELEGRAM_AUTHORIZED_CHAT_IDS=<your-chat-id>,<another-chat-id>
+```
+
+- `TELEGRAM_BOT_TOKEN` is required to send messages, must use Telegram's `123456789:token` format, and is never stored in JSON config.
+- `TELEGRAM_LONG_POLLING` defaults to `true`, but is informational only until inbound commands are implemented.
+- `TELEGRAM_AUTHORIZED_USER_IDS` and `TELEGRAM_AUTHORIZED_CHAT_IDS` scope delivery. Empty allowlists send nothing. User IDs must be positive integers; chat IDs must be non-zero integers.
+- Negative chat IDs are valid. Telegram supergroups/channels commonly use IDs like `-1001234567890`.
+- `OPENCODE_NOTIFIER_ENV_PATH` can point at a different env file.
+
+### Telegram TUI controls
+
+The TUI entrypoint is exported as `opencode-telegram-notifications/tui`. In OpenCode TUI, press `ctrl+p` and select `Telegram: Enabled` or `Telegram: Disabled` to open the Telegram settings screen.
+
+The TUI can toggle `telegram.enabled` and per-event `events.<event>.telegram` values with selection or Enter/Return on the focused row. Esc exits the settings screen. It shows whether the bot token is present, long-polling value, allowlist counts, and the env/config paths. It does not display or edit secrets.
 
 #### Example: Log events to a file
 
@@ -455,19 +516,19 @@ If Opencode does not update the plugin or there is an issue with the cache versi
 
 ```bash
 # Linux/macOS
-rm -rf ~/.cache/opencode/packages/@mohak34/opencode-notifier@beta
-rm -rf ~/.cache/opencode/node_modules/@mohak34/opencode-notifier
+rm -rf ~/.cache/opencode/packages/opencode-telegram-notifications
+rm -rf ~/.cache/opencode/node_modules/opencode-telegram-notifications
 
 # Windows
-Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\opencode\packages\@mohak34\opencode-notifier@beta"
-Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\opencode\node_modules\@mohak34\opencode-notifier"
+Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\opencode\packages\opencode-telegram-notifications"
+Remove-Item -Recurse -Force "$env:USERPROFILE\.cache\opencode\node_modules\opencode-telegram-notifications"
 ```
 
 Then restart OpenCode.
 
 Verify installation:
 ```bash
-cat ~/.cache/opencode/packages/@mohak34/opencode-notifier@beta/node_modules/@mohak34/opencode-notifier/package.json | grep version
+cat ~/.cache/opencode/node_modules/opencode-telegram-notifications/package.json | grep version
 ```
 
 ## Troubleshooting
@@ -578,7 +639,7 @@ This is a known Bun issue on Windows. Disable native notifications and use Power
 - Check `enableOnDesktop`: defaults to `false`, so the plugin won't run on Desktop/Web clients. Set to `true` if you need it there.
 - Verify the package is actually cached:
   ```bash
-  cat ~/.cache/opencode/packages/@mohak34/opencode-notifier@beta/node_modules/@mohak34/opencode-notifier/package.json | grep version
+  cat ~/.cache/opencode/node_modules/opencode-telegram-notifications/package.json | grep version
   ```
 
 ## Changelog

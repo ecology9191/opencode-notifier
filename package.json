@@ -1,19 +1,15 @@
 {
-  "name": "@mohak34/opencode-notifier",
-  "version": "0.2.4",
-  "description": "OpenCode plugin that sends system notifications and plays sounds when permission is needed, generation completes, or errors occur",
-  "author": "mohak34",
+  "name": "opencode-telegram-notifications",
+  "version": "0.1.2",
+  "description": "OpenCode plugin that sends system, sound, and outbound Telegram notifications with TUI controls",
+  "author": "ecology91",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/mohak34/opencode-notifier.git"
-  },
-  "homepage": "https://github.com/mohak34/opencode-notifier#readme",
-  "bugs": {
-    "url": "https://github.com/mohak34/opencode-notifier/issues"
+  "exports": {
+    ".": "./dist/index.js",
+    "./server": "./dist/server.js",
+    "./tui": "./dist/tui.js"
   },
   "files": [
     "dist",
@@ -21,7 +17,7 @@
     "logos"
   ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target node --external node-notifier",
+    "build": "bun build src/index.ts src/server.ts src/tui.ts --outdir dist --target node --external node-notifier",
     "prepublishOnly": "bun run build",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
@@ -29,6 +25,7 @@
   "keywords": [
     "opencode",
     "opencode-plugin",
+    "telegram",
     "notifications",
     "sound",
     "alerts"
