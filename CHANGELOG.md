@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.5] - 2026-05-21
+
+### Added
+- CI: npm publish workflow on GitHub release (tag must match `package.json`)
+- CI: Gitleaks secret scan
+
+### Fixed
+- Skip desktop notifications when D-Bus is unavailable (#73)
+- Hide PowerShell window during Windows focus checks
+- Detect iTerm2 hotkey window as focused on macOS
+
+### Changed
+- Merged upstream `main` (includes `showFullPath` and other 0.2.5 fixes)
+
 ## [0.2.5] - 2026-05-09
 
 ### Added
