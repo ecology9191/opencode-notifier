@@ -3,6 +3,14 @@
   "version": "0.2.0",
   "description": "OpenCode plugin that sends system, sound, and outbound Telegram notifications with TUI controls",
   "author": "ecology91",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ecology9191/opencode-notifier.git"
+  },
+  "homepage": "https://github.com/ecology9191/opencode-notifier#readme",
+  "bugs": {
+    "url": "https://github.com/ecology9191/opencode-notifier/issues"
+  },
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
