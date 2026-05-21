@@ -1,6 +1,6 @@
 {
   "name": "opencode-telegram-notifications",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "OpenCode plugin that sends system, sound, and outbound Telegram notifications with TUI controls",
   "author": "ecology91",
   "license": "MIT",

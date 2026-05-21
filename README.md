@@ -101,7 +101,11 @@ Create `~/.config/opencode/opencode-notifier.json` with the defaults:
     "minDuration": 0
   },
   "telegram": {
-    "enabled": false
+    "enabled": false,
+    "botToken": null,
+    "longPolling": true,
+    "authorizedUserIds": [],
+    "authorizedChatIds": []
   },
   "events": {
     "permission": { "sound": true, "notification": true, "command": true, "bell": false, "telegram": true },
@@ -218,7 +222,7 @@ The `command` property controls whether the custom command (see [Custom commands
 
 `bell` is terminal-driven and may be audible, visual, both, or ignored depending on your terminal setup. Quick check: `printf '\a'`.
 
-`telegram` controls whether Telegram sends for that event when `telegram.enabled` is true and env allowlists are configured.
+`telegram` controls whether Telegram sends for that event when `telegram.enabled` is true, a valid `telegram.botToken` is set, and allowlists are configured.
 
 Or use true/false for both:
 
@@ -341,12 +345,16 @@ Run your own script when something happens. Use `{event}`, `{message}`, `{sessio
 
 Telegram support is outbound-only in this first pass. The plugin sends messages to allowlisted Telegram users/chats, but it does not read Telegram commands or start long-polling control loops yet.
 
-Enable Telegram in `~/.config/opencode/opencode-notifier.json`:
+Configure Telegram in `~/.config/opencode/opencode-notifier.json`:
 
 ```json
 {
   "telegram": {
-    "enabled": true
+    "enabled": true,
+    "botToken": "123456789:your-bot-token",
+    "longPolling": true,
+    "authorizedUserIds": [123456789],
+    "authorizedChatIds": [-1001234567890]
   },
   "events": {
     "permission": { "telegram": true },
@@ -356,26 +364,20 @@ Enable Telegram in `~/.config/opencode/opencode-notifier.json`:
 }
 ```
 
-Put secrets and allowlists in `~/.config/opencode/opencode-notifier.env`:
-
-```dotenv
-TELEGRAM_BOT_TOKEN=123456789:your-bot-token
-TELEGRAM_LONG_POLLING=true
-TELEGRAM_AUTHORIZED_USER_IDS=<your-user-id>,<another-user-id>
-TELEGRAM_AUTHORIZED_CHAT_IDS=<your-chat-id>,<another-chat-id>
-```
-
-- `TELEGRAM_BOT_TOKEN` is required to send messages, must use Telegram's `123456789:token` format, and is never stored in JSON config.
-- `TELEGRAM_LONG_POLLING` defaults to `true`, but is informational only until inbound commands are implemented.
-- `TELEGRAM_AUTHORIZED_USER_IDS` and `TELEGRAM_AUTHORIZED_CHAT_IDS` scope delivery. Empty allowlists send nothing. User IDs must be positive integers; chat IDs must be non-zero integers.
+- `telegram.botToken` is required to send messages and must use Telegram's `123456789:token` format. Invalid tokens are ignored.
+- `telegram.longPolling` defaults to `true` and is informational only until inbound commands are implemented.
+- `telegram.authorizedUserIds` and `telegram.authorizedChatIds` scope delivery. Empty allowlists send nothing. User IDs must be positive integers; chat IDs must be non-zero integers.
 - Negative chat IDs are valid. Telegram supergroups/channels commonly use IDs like `-1001234567890`.
-- `OPENCODE_NOTIFIER_ENV_PATH` can point at a different env file.
+
+**Security:** The bot token lives in the same JSON file as other settings. Do not commit or share `opencode-notifier.json`. Exclude it from public dotfiles repositories.
+
+**Upgrading from env files:** If you previously used `~/.config/opencode/opencode-notifier.env`, the plugin migrates `TELEGRAM_*` values into JSON on first load and renames the legacy file to `opencode-notifier.env.migrated`.
 
 ### Telegram TUI controls
 
 The TUI entrypoint is exported as `opencode-telegram-notifications/tui`. In OpenCode TUI, press `ctrl+p` and select `Telegram: Enabled` or `Telegram: Disabled` to open the Telegram settings screen.
 
-The TUI can toggle `telegram.enabled` and per-event `events.<event>.telegram` values with selection or Enter/Return on the focused row. Esc exits the settings screen. It shows whether the bot token is present, long-polling value, allowlist counts, and the env/config paths. It does not display or edit secrets.
+The TUI can edit `telegram.enabled`, bot token (via prompt; stored value is never shown in the list), long polling, allowlists, and per-event `events.<event>.telegram` values. Esc exits the settings screen.
 
 #### Example: Log events to a file
 

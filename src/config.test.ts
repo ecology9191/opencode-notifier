@@ -5,14 +5,7 @@ import { homedir } from "os"
 
 const testConfigDir = join(homedir(), ".config", "opencode-test")
 const testConfigPath = join(testConfigDir, "opencode-notifier.json")
-const testEnvPath = join(testConfigDir, "opencode-notifier.env")
-const telegramEnvKeys = [
-  "OPENCODE_NOTIFIER_ENV_PATH",
-  "TELEGRAM_BOT_TOKEN",
-  "TELEGRAM_LONG_POLLING",
-  "TELEGRAM_AUTHORIZED_USER_IDS",
-  "TELEGRAM_AUTHORIZED_CHAT_IDS",
-]
+const testLegacyEnvPath = join(testConfigDir, "opencode-notifier.env")
 
 function setTestEnv() {
   process.env.OPENCODE_NOTIFIER_CONFIG_PATH = testConfigPath
@@ -20,13 +13,6 @@ function setTestEnv() {
 
 function unsetTestEnv() {
   delete process.env.OPENCODE_NOTIFIER_CONFIG_PATH
-  clearTelegramEnv()
-}
-
-function clearTelegramEnv() {
-  for (const key of telegramEnvKeys) {
-    delete process.env[key]
-  }
 }
 
 function cleanupTestConfig() {
@@ -50,13 +36,11 @@ describe("Config", () => {
   })
 
   beforeEach(() => {
-    clearTelegramEnv()
     cleanupTestConfig()
     mkdirSync(testConfigDir, { recursive: true })
   })
 
   afterEach(() => {
-    clearTelegramEnv()
     cleanupTestConfig()
   })
 
@@ -78,7 +62,7 @@ describe("Config", () => {
     expect(config.telegram.authorizedChatIds).toEqual([])
   })
 
-  test("loadConfig parses existing config file", async () => {
+  test("loadConfig parses existing config file with Telegram secrets in JSON", async () => {
     const testConfig = {
       sound: false,
       notification: true,
@@ -86,48 +70,32 @@ describe("Config", () => {
       timeout: 10,
       telegram: {
         enabled: true,
+        botToken: "123456:json-token",
+        longPolling: false,
       },
     }
-    process.env.TELEGRAM_BOT_TOKEN = "123456:process-token"
     writeFileSync(testConfigPath, JSON.stringify(testConfig))
-    
+
     const { loadConfig } = await import("./config")
     const config = loadConfig()
-    
+
     expect(config.sound).toBe(false)
     expect(config.notification).toBe(true)
     expect(config.bell).toBe(true)
     expect(config.timeout).toBe(10)
     expect(config.telegram.enabled).toBe(true)
-    expect(config.telegram.botToken).toBe("123456:process-token")
-  })
-
-  test("loadConfig parses Telegram boolean env and prefers process env over env file", async () => {
-    writeFileSync(testEnvPath, "TELEGRAM_LONG_POLLING=false\nTELEGRAM_BOT_TOKEN=123456:file-token\n")
-    process.env.TELEGRAM_LONG_POLLING = "yes"
-    process.env.TELEGRAM_BOT_TOKEN = "654321:process-token"
-
-    const { loadConfig } = await import("./config")
-    const config = loadConfig()
-
-    expect(config.telegram.longPolling).toBe(true)
-    expect(config.telegram.botToken).toBe("654321:process-token")
-  })
-
-  test("loadConfig parses disabled Telegram long polling from env file", async () => {
-    writeFileSync(testEnvPath, "TELEGRAM_LONG_POLLING=0\n")
-
-    const { loadConfig } = await import("./config")
-    const config = loadConfig()
-
+    expect(config.telegram.botToken).toBe("123456:json-token")
     expect(config.telegram.longPolling).toBe(false)
   })
 
-  test("loadConfig parses signed safe Telegram allowlist IDs", async () => {
-    writeFileSync(
-      testEnvPath,
-      "TELEGRAM_AUTHORIZED_USER_IDS=invalid 123, 456 -789 123 0 9007199254740992\nTELEGRAM_AUTHORIZED_CHAT_IDS=invalid -1001234567890, 42, 42, 0\n"
-    )
+  test("loadConfig parses Telegram allowlists from JSON arrays", async () => {
+    const testConfig = {
+      telegram: {
+        authorizedUserIds: [123, 456, 0, 9007199254740992],
+        authorizedChatIds: [-1001234567890, 42, 42, 0],
+      },
+    }
+    writeFileSync(testConfigPath, JSON.stringify(testConfig))
 
     const { loadConfig } = await import("./config")
     const config = loadConfig()
@@ -136,8 +104,12 @@ describe("Config", () => {
     expect(config.telegram.authorizedChatIds).toEqual([-1001234567890, 42])
   })
 
-  test("loadConfig rejects invalid Telegram bot tokens", async () => {
-    process.env.TELEGRAM_BOT_TOKEN = "not a token"
+  test("loadConfig rejects invalid Telegram bot tokens in JSON", async () => {
+    writeFileSync(testConfigPath, JSON.stringify({
+      telegram: {
+        botToken: "not a token",
+      },
+    }))
 
     const { loadConfig } = await import("./config")
     const config = loadConfig()
@@ -145,8 +117,13 @@ describe("Config", () => {
     expect(config.telegram.botToken).toBe(null)
   })
 
-  test("loadConfig keeps empty Telegram allowlists empty", async () => {
-    writeFileSync(testEnvPath, "TELEGRAM_AUTHORIZED_USER_IDS=\nTELEGRAM_AUTHORIZED_CHAT_IDS=   \n")
+  test("loadConfig keeps empty Telegram allowlists when JSON arrays are empty", async () => {
+    writeFileSync(testConfigPath, JSON.stringify({
+      telegram: {
+        authorizedUserIds: [],
+        authorizedChatIds: [],
+      },
+    }))
 
     const { loadConfig } = await import("./config")
     const config = loadConfig()
@@ -155,15 +132,64 @@ describe("Config", () => {
     expect(config.telegram.authorizedChatIds).toEqual([])
   })
 
-  test("loadConfig reads Telegram env from OPENCODE_NOTIFIER_ENV_PATH", async () => {
-    const customEnvPath = join(testConfigDir, "custom.env")
-    process.env.OPENCODE_NOTIFIER_ENV_PATH = customEnvPath
-    writeFileSync(customEnvPath, "TELEGRAM_BOT_TOKEN=123456:custom-token\n")
+  test("loadConfig migrates legacy opencode-notifier.env into JSON once", async () => {
+    writeFileSync(testConfigPath, JSON.stringify({ telegram: { enabled: true } }))
+    writeFileSync(
+      testLegacyEnvPath,
+      "TELEGRAM_BOT_TOKEN=123456:legacy-token\nTELEGRAM_LONG_POLLING=0\nTELEGRAM_AUTHORIZED_USER_IDS=123\nTELEGRAM_AUTHORIZED_CHAT_IDS=-1001234567890\n"
+    )
 
     const { loadConfig } = await import("./config")
     const config = loadConfig()
 
-    expect(config.telegram.botToken).toBe("123456:custom-token")
+    expect(config.telegram.botToken).toBe("123456:legacy-token")
+    expect(config.telegram.longPolling).toBe(false)
+    expect(config.telegram.authorizedUserIds).toEqual([123])
+    expect(config.telegram.authorizedChatIds).toEqual([-1001234567890])
+
+    const migratedConfig = JSON.parse(readFileSync(testConfigPath, "utf-8"))
+    expect(migratedConfig.telegram.botToken).toBe("123456:legacy-token")
+    expect(existsSync(testLegacyEnvPath)).toBe(false)
+    expect(existsSync(`${testLegacyEnvPath}.migrated`)).toBe(true)
+  })
+
+  test("loadConfig migrates legacy Telegram env when JSON config is missing", async () => {
+    writeFileSync(
+      testLegacyEnvPath,
+      "TELEGRAM_BOT_TOKEN=123456:legacy-token\nTELEGRAM_AUTHORIZED_USER_IDS=123\n"
+    )
+
+    const { loadConfig } = await import("./config")
+    const config = loadConfig()
+
+    expect(config.telegram.botToken).toBe("123456:legacy-token")
+    expect(config.telegram.authorizedUserIds).toEqual([123])
+    expect(existsSync(testConfigPath)).toBe(true)
+    expect(existsSync(testLegacyEnvPath)).toBe(false)
+    expect(existsSync(`${testLegacyEnvPath}.migrated`)).toBe(true)
+  })
+
+  test("loadConfig merges legacy Telegram env into partial JSON config", async () => {
+    writeFileSync(testConfigPath, JSON.stringify({
+      telegram: {
+        botToken: "654321:json-token",
+        authorizedUserIds: [456],
+      },
+    }))
+    writeFileSync(
+      testLegacyEnvPath,
+      "TELEGRAM_BOT_TOKEN=123456:legacy-token\nTELEGRAM_LONG_POLLING=0\nTELEGRAM_AUTHORIZED_USER_IDS=123,456\nTELEGRAM_AUTHORIZED_CHAT_IDS=-1001234567890\n"
+    )
+
+    const { loadConfig } = await import("./config")
+    const config = loadConfig()
+
+    expect(config.telegram.botToken).toBe("654321:json-token")
+    expect(config.telegram.longPolling).toBe(false)
+    expect(config.telegram.authorizedUserIds).toEqual([456, 123])
+    expect(config.telegram.authorizedChatIds).toEqual([-1001234567890])
+    expect(existsSync(testLegacyEnvPath)).toBe(false)
+    expect(existsSync(`${testLegacyEnvPath}.migrated`)).toBe(true)
   })
 
   test("loadConfig handles missing optional fields with defaults", async () => {

@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from "fs"
+import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync } from "fs"
 import { join, dirname } from "path"
 import { homedir } from "os"
 import { fileURLToPath } from "url"
@@ -226,15 +226,97 @@ export function getStatePath(): string {
   return join(dirname(configPath), "opencode-notifier-state.json")
 }
 
-export function getEnvPath(configPath = getConfigPath()): string {
-  if (process.env.OPENCODE_NOTIFIER_ENV_PATH) {
-    return process.env.OPENCODE_NOTIFIER_ENV_PATH
-  }
-
-  return join(dirname(configPath), "opencode-notifier.env")
+function parseBooleanConfig(value: unknown, defaultValue: boolean): boolean {
+  return typeof value === "boolean" ? value : defaultValue
 }
 
-function parseEnvFile(path: string): Record<string, string> {
+export function isValidTelegramBotToken(value: string | null | undefined): value is string {
+  return typeof value === "string" && /^\d+:[A-Za-z0-9_-]+$/.test(value)
+}
+
+export function parseTelegramBotTokenFromJson(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null
+  }
+
+  const token = value.trim()
+  return isValidTelegramBotToken(token) ? token : null
+}
+
+function parseSafeIntegerList(value: string | undefined, isAllowed: (value: number) => boolean): number[] {
+  if (!value) {
+    return []
+  }
+
+  const numbers: number[] = []
+  const seen = new Set<number>()
+
+  for (const part of value.split(/[\s,]+/)) {
+    const trimmed = part.trim()
+    if (!/^[+-]?\d+$/.test(trimmed)) {
+      continue
+    }
+
+    const number = Number(trimmed)
+    if (!Number.isSafeInteger(number) || !isAllowed(number) || seen.has(number)) {
+      continue
+    }
+
+    numbers.push(number)
+    seen.add(number)
+  }
+
+  return numbers
+}
+
+export function parseTelegramIdListFromString(
+  value: string,
+  isAllowed: (id: number) => boolean
+): number[] {
+  return parseSafeIntegerList(value, isAllowed)
+}
+
+export function parseTelegramIdArray(value: unknown, isAllowed: (id: number) => boolean): number[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+
+  const numbers: number[] = []
+  const seen = new Set<number>()
+
+  for (const item of value) {
+    if (typeof item !== "number" || !Number.isSafeInteger(item) || !isAllowed(item) || seen.has(item)) {
+      continue
+    }
+
+    numbers.push(item)
+    seen.add(item)
+  }
+
+  return numbers
+}
+
+type TelegramUserConfig = {
+  enabled?: unknown
+  botToken?: unknown
+  longPolling?: unknown
+  authorizedUserIds?: unknown
+  authorizedChatIds?: unknown
+}
+
+function parseTelegramConfig(userConfig: { telegram?: TelegramUserConfig } = {}): TelegramConfig {
+  const telegram = userConfig.telegram ?? {}
+
+  return {
+    enabled: parseBooleanConfig(telegram.enabled, DEFAULT_CONFIG.telegram.enabled),
+    botToken: parseTelegramBotTokenFromJson(telegram.botToken),
+    longPolling: parseBooleanConfig(telegram.longPolling, DEFAULT_CONFIG.telegram.longPolling),
+    authorizedUserIds: parseTelegramIdArray(telegram.authorizedUserIds, (id) => id > 0),
+    authorizedChatIds: parseTelegramIdArray(telegram.authorizedChatIds, (id) => id !== 0),
+  }
+}
+
+function parseLegacyEnvFile(path: string): Record<string, string> {
   if (!existsSync(path)) {
     return {}
   }
@@ -273,10 +355,6 @@ function parseEnvFile(path: string): Record<string, string> {
   }
 }
 
-function getEnvValue(key: string, envFile: Record<string, string>): string | undefined {
-  return process.env[key] ?? envFile[key]
-}
-
 function parseBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
   if (value === undefined) {
     return defaultValue
@@ -298,55 +376,103 @@ function parseBooleanEnv(value: string | undefined, defaultValue: boolean): bool
   }
 }
 
-function parseBooleanConfig(value: unknown, defaultValue: boolean): boolean {
-  return typeof value === "boolean" ? value : defaultValue
+function hasLegacyTelegramEnv(envFile: Record<string, string>): boolean {
+  return (
+    "TELEGRAM_BOT_TOKEN" in envFile ||
+    "TELEGRAM_LONG_POLLING" in envFile ||
+    "TELEGRAM_AUTHORIZED_USER_IDS" in envFile ||
+    "TELEGRAM_AUTHORIZED_CHAT_IDS" in envFile
+  )
 }
 
-export function isValidTelegramBotToken(value: string | null | undefined): value is string {
-  return typeof value === "string" && /^\d+:[A-Za-z0-9_-]+$/.test(value)
-}
+function mergeTelegramIds(currentIds: number[], legacyIds: number[]): number[] {
+  const merged = [...currentIds]
+  const seen = new Set(merged)
 
-function parseTelegramBotToken(value: string | undefined): string | null {
-  const token = value?.trim()
-  return token && isValidTelegramBotToken(token) ? token : null
-}
-
-function parseSafeIntegerList(value: string | undefined, isAllowed: (value: number) => boolean): number[] {
-  if (!value) {
-    return []
-  }
-
-  const numbers: number[] = []
-  const seen = new Set<number>()
-
-  for (const part of value.split(/[\s,]+/)) {
-    const trimmed = part.trim()
-    if (!/^[+-]?\d+$/.test(trimmed)) {
-      continue
+  for (const id of legacyIds) {
+    if (!seen.has(id)) {
+      merged.push(id)
+      seen.add(id)
     }
-
-    const number = Number(trimmed)
-    if (!Number.isSafeInteger(number) || !isAllowed(number) || seen.has(number)) {
-      continue
-    }
-
-    numbers.push(number)
-    seen.add(number)
   }
 
-  return numbers
+  return merged
 }
 
-function parseTelegramConfig(configPath: string, userConfig: { telegram?: { enabled?: unknown } } = {}): TelegramConfig {
-  const envFile = parseEnvFile(getEnvPath(configPath))
+function arraysEqual(left: number[], right: number[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
 
-  return {
-    enabled: parseBooleanConfig(userConfig.telegram?.enabled, DEFAULT_CONFIG.telegram.enabled),
-    botToken: parseTelegramBotToken(getEnvValue("TELEGRAM_BOT_TOKEN", envFile)),
-    longPolling: parseBooleanEnv(getEnvValue("TELEGRAM_LONG_POLLING", envFile), DEFAULT_CONFIG.telegram.longPolling),
-    authorizedUserIds: parseSafeIntegerList(getEnvValue("TELEGRAM_AUTHORIZED_USER_IDS", envFile), (id) => id > 0),
-    authorizedChatIds: parseSafeIntegerList(getEnvValue("TELEGRAM_AUTHORIZED_CHAT_IDS", envFile), (id) => id !== 0),
+function migrateLegacyTelegramEnv(configPath: string, userConfig: Record<string, unknown>): Record<string, unknown> {
+  const legacyEnvPath = join(dirname(configPath), "opencode-notifier.env")
+  if (!existsSync(legacyEnvPath)) {
+    return userConfig
   }
+
+  const envFile = parseLegacyEnvFile(legacyEnvPath)
+  if (!hasLegacyTelegramEnv(envFile)) {
+    return userConfig
+  }
+
+  const telegram = (typeof userConfig.telegram === "object" && userConfig.telegram !== null && !Array.isArray(userConfig.telegram))
+    ? { ...(userConfig.telegram as Record<string, unknown>) }
+    : {}
+  const currentTelegram = parseTelegramConfig({ telegram: telegram as TelegramUserConfig })
+  const botToken = parseTelegramBotTokenFromJson(envFile.TELEGRAM_BOT_TOKEN)
+  const authorizedUserIds = parseSafeIntegerList(envFile.TELEGRAM_AUTHORIZED_USER_IDS, (id) => id > 0)
+  const authorizedChatIds = parseSafeIntegerList(envFile.TELEGRAM_AUTHORIZED_CHAT_IDS, (id) => id !== 0)
+  const longPolling = parseBooleanEnv(envFile.TELEGRAM_LONG_POLLING, DEFAULT_CONFIG.telegram.longPolling)
+  let configChanged = false
+
+  if (!currentTelegram.botToken && botToken) {
+    telegram.botToken = botToken
+    configChanged = true
+  }
+
+  const mergedUserIds = mergeTelegramIds(currentTelegram.authorizedUserIds, authorizedUserIds)
+  if (!arraysEqual(mergedUserIds, currentTelegram.authorizedUserIds)) {
+    telegram.authorizedUserIds = mergedUserIds
+    configChanged = true
+  }
+
+  const mergedChatIds = mergeTelegramIds(currentTelegram.authorizedChatIds, authorizedChatIds)
+  if (!arraysEqual(mergedChatIds, currentTelegram.authorizedChatIds)) {
+    telegram.authorizedChatIds = mergedChatIds
+    configChanged = true
+  }
+
+  if (envFile.TELEGRAM_LONG_POLLING !== undefined && typeof telegram.longPolling !== "boolean") {
+    telegram.longPolling = longPolling
+    configChanged = true
+  }
+
+  const migratedConfig = {
+    ...userConfig,
+    telegram,
+  }
+
+  if (configChanged) {
+    mkdirSync(dirname(configPath), { recursive: true })
+    writeFileSync(configPath, `${JSON.stringify(migratedConfig, null, 2)}\n`)
+  }
+
+  const migratedEnvPath = `${legacyEnvPath}.migrated`
+  let envRenamed = false
+  try {
+    renameSync(legacyEnvPath, migratedEnvPath)
+    envRenamed = true
+  } catch {
+    // Ignore rename failures; JSON migration still succeeded.
+  }
+
+  console.warn(
+    "Telegram settings were migrated from opencode-notifier.env into opencode-notifier.json. "
+    + (envRenamed
+      ? `The legacy env file was renamed to ${migratedEnvPath}.`
+      : `The legacy env file could not be renamed to ${migratedEnvPath}.`)
+  )
+
+  return configChanged ? migratedConfig : userConfig
 }
 
 function parseEventConfig(
@@ -396,15 +522,19 @@ export function loadConfig(): NotifierConfig {
   const configPath = getConfigPath()
 
   if (!existsSync(configPath)) {
+    const userConfig = migrateLegacyTelegramEnv(configPath, {})
     return {
       ...DEFAULT_CONFIG,
-      telegram: parseTelegramConfig(configPath),
+      telegram: parseTelegramConfig(userConfig as { telegram?: TelegramUserConfig }),
     }
   }
 
   try {
     const fileContent = readFileSync(configPath, "utf-8")
-    const userConfig = JSON.parse(fileContent)
+    let userConfig: Record<string, unknown> = JSON.parse(fileContent)
+    if (typeof userConfig === "object" && userConfig !== null && !Array.isArray(userConfig)) {
+      userConfig = migrateLegacyTelegramEnv(configPath, userConfig)
+    }
 
     const globalSound = parseBooleanConfig(userConfig.sound, DEFAULT_CONFIG.sound)
     const globalNotification = parseBooleanConfig(userConfig.notification, DEFAULT_CONFIG.notification)
@@ -418,7 +548,12 @@ export function loadConfig(): NotifierConfig {
       telegram: globalNotification,
     }
 
-    const userCommand = userConfig.command ?? {}
+    const userCommand = (userConfig.command ?? {}) as {
+      enabled?: unknown
+      path?: unknown
+      args?: unknown
+      minDuration?: unknown
+    }
     const commandArgs = Array.isArray(userCommand.args)
       ? userCommand.args.filter((arg: unknown) => typeof arg === "string")
       : undefined
@@ -438,12 +573,12 @@ export function loadConfig(): NotifierConfig {
         typeof userConfig.timeout === "number" && userConfig.timeout > 0
           ? userConfig.timeout
           : DEFAULT_CONFIG.timeout,
-      showProjectName: userConfig.showProjectName ?? DEFAULT_CONFIG.showProjectName,
-      showFullPath: userConfig.showFullPath ?? DEFAULT_CONFIG.showFullPath,
-      showSessionTitle: userConfig.showSessionTitle ?? DEFAULT_CONFIG.showSessionTitle,
-      showIcon: userConfig.showIcon ?? DEFAULT_CONFIG.showIcon,
-      customIconPath: userConfig.customIconPath ?? DEFAULT_CONFIG.customIconPath,
-      suppressWhenFocused: userConfig.suppressWhenFocused ?? DEFAULT_CONFIG.suppressWhenFocused,
+      showProjectName: (userConfig.showProjectName as boolean | undefined) ?? DEFAULT_CONFIG.showProjectName,
+      showFullPath: (userConfig.showFullPath as boolean | undefined) ?? DEFAULT_CONFIG.showFullPath,
+      showSessionTitle: (userConfig.showSessionTitle as boolean | undefined) ?? DEFAULT_CONFIG.showSessionTitle,
+      showIcon: (userConfig.showIcon as boolean | undefined) ?? DEFAULT_CONFIG.showIcon,
+      customIconPath: (userConfig.customIconPath as string | null | undefined) ?? DEFAULT_CONFIG.customIconPath,
+      suppressWhenFocused: (userConfig.suppressWhenFocused as boolean | undefined) ?? DEFAULT_CONFIG.suppressWhenFocused,
       enableOnDesktop: typeof userConfig.enableOnDesktop === "boolean" ? userConfig.enableOnDesktop : DEFAULT_CONFIG.enableOnDesktop,
       notificationSystem:
         userConfig.notificationSystem === "node-notifier"
@@ -452,7 +587,9 @@ export function loadConfig(): NotifierConfig {
             ? "ghostty"
             : "osascript",
       linux: {
-        grouping: typeof userConfig.linux?.grouping === "boolean" ? userConfig.linux.grouping : DEFAULT_CONFIG.linux.grouping,
+        grouping: typeof (userConfig.linux as { grouping?: unknown } | undefined)?.grouping === "boolean"
+          ? (userConfig.linux as { grouping: boolean }).grouping
+          : DEFAULT_CONFIG.linux.grouping,
       },
       minDuration:
         typeof userConfig.minDuration === "number" && Number.isFinite(userConfig.minDuration) && userConfig.minDuration >= 0
@@ -464,67 +601,67 @@ export function loadConfig(): NotifierConfig {
         args: commandArgs,
         minDuration: commandMinDuration,
       },
-      telegram: parseTelegramConfig(configPath, userConfig),
+      telegram: parseTelegramConfig(userConfig as { telegram?: TelegramUserConfig }),
       events: {
-        permission: parseEventConfig(userConfig.events?.permission ?? userConfig.permission, defaultWithGlobal),
-        complete: parseEventConfig(userConfig.events?.complete ?? userConfig.complete, defaultWithGlobal),
-        subagent_complete: parseEventConfig(userConfig.events?.subagent_complete ?? userConfig.subagent_complete, { sound: false, notification: false, command: true, bell: false, telegram: false }),
-        error: parseEventConfig(userConfig.events?.error ?? userConfig.error, defaultWithGlobal),
-        question: parseEventConfig(userConfig.events?.question ?? userConfig.question, defaultWithGlobal),
-        interrupted: parseEventConfig(userConfig.events?.interrupted ?? userConfig.interrupted, defaultWithGlobal),
-        user_cancelled: parseEventConfig(userConfig.events?.user_cancelled ?? userConfig.user_cancelled, { sound: false, notification: false, command: true, bell: false, telegram: false }),
-        plan_exit: parseEventConfig(userConfig.events?.plan_exit ?? userConfig.plan_exit, defaultWithGlobal),
-        session_started: parseEventConfig(userConfig.events?.session_started ?? userConfig.session_started, { ...defaultWithGlobal, notification: false, telegram: false }),
-        user_message: parseEventConfig(userConfig.events?.user_message ?? userConfig.user_message, { ...defaultWithGlobal, notification: false, telegram: false }),
-        client_connected: parseEventConfig(userConfig.events?.client_connected ?? userConfig.client_connected, { ...defaultWithGlobal, notification: false, telegram: false }),
+        permission: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.permission ?? userConfig.permission) as Parameters<typeof parseEventConfig>[0], defaultWithGlobal),
+        complete: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.complete ?? userConfig.complete) as Parameters<typeof parseEventConfig>[0], defaultWithGlobal),
+        subagent_complete: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.subagent_complete ?? userConfig.subagent_complete) as Parameters<typeof parseEventConfig>[0], { sound: false, notification: false, command: true, bell: false, telegram: false }),
+        error: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.error ?? userConfig.error) as Parameters<typeof parseEventConfig>[0], defaultWithGlobal),
+        question: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.question ?? userConfig.question) as Parameters<typeof parseEventConfig>[0], defaultWithGlobal),
+        interrupted: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.interrupted ?? userConfig.interrupted) as Parameters<typeof parseEventConfig>[0], defaultWithGlobal),
+        user_cancelled: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.user_cancelled ?? userConfig.user_cancelled) as Parameters<typeof parseEventConfig>[0], { sound: false, notification: false, command: true, bell: false, telegram: false }),
+        plan_exit: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.plan_exit ?? userConfig.plan_exit) as Parameters<typeof parseEventConfig>[0], defaultWithGlobal),
+        session_started: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.session_started ?? userConfig.session_started) as Parameters<typeof parseEventConfig>[0], { ...defaultWithGlobal, notification: false, telegram: false }),
+        user_message: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.user_message ?? userConfig.user_message) as Parameters<typeof parseEventConfig>[0], { ...defaultWithGlobal, notification: false, telegram: false }),
+        client_connected: parseEventConfig(((userConfig.events as Record<string, unknown> | undefined)?.client_connected ?? userConfig.client_connected) as Parameters<typeof parseEventConfig>[0], { ...defaultWithGlobal, notification: false, telegram: false }),
       },
       messages: {
-        permission: userConfig.messages?.permission ?? DEFAULT_CONFIG.messages.permission,
-        complete: userConfig.messages?.complete ?? DEFAULT_CONFIG.messages.complete,
-        subagent_complete: userConfig.messages?.subagent_complete ?? DEFAULT_CONFIG.messages.subagent_complete,
-        error: userConfig.messages?.error ?? DEFAULT_CONFIG.messages.error,
-        question: userConfig.messages?.question ?? DEFAULT_CONFIG.messages.question,
-        interrupted: userConfig.messages?.interrupted ?? DEFAULT_CONFIG.messages.interrupted,
-        user_cancelled: userConfig.messages?.user_cancelled ?? DEFAULT_CONFIG.messages.user_cancelled,
-        plan_exit: userConfig.messages?.plan_exit ?? DEFAULT_CONFIG.messages.plan_exit,
-        session_started: userConfig.messages?.session_started ?? DEFAULT_CONFIG.messages.session_started,
-        user_message: userConfig.messages?.user_message ?? DEFAULT_CONFIG.messages.user_message,
-        client_connected: userConfig.messages?.client_connected ?? DEFAULT_CONFIG.messages.client_connected,
+        permission: (userConfig.messages as Record<string, string> | undefined)?.permission ?? DEFAULT_CONFIG.messages.permission,
+        complete: (userConfig.messages as Record<string, string> | undefined)?.complete ?? DEFAULT_CONFIG.messages.complete,
+        subagent_complete: (userConfig.messages as Record<string, string> | undefined)?.subagent_complete ?? DEFAULT_CONFIG.messages.subagent_complete,
+        error: (userConfig.messages as Record<string, string> | undefined)?.error ?? DEFAULT_CONFIG.messages.error,
+        question: (userConfig.messages as Record<string, string> | undefined)?.question ?? DEFAULT_CONFIG.messages.question,
+        interrupted: (userConfig.messages as Record<string, string> | undefined)?.interrupted ?? DEFAULT_CONFIG.messages.interrupted,
+        user_cancelled: (userConfig.messages as Record<string, string> | undefined)?.user_cancelled ?? DEFAULT_CONFIG.messages.user_cancelled,
+        plan_exit: (userConfig.messages as Record<string, string> | undefined)?.plan_exit ?? DEFAULT_CONFIG.messages.plan_exit,
+        session_started: (userConfig.messages as Record<string, string> | undefined)?.session_started ?? DEFAULT_CONFIG.messages.session_started,
+        user_message: (userConfig.messages as Record<string, string> | undefined)?.user_message ?? DEFAULT_CONFIG.messages.user_message,
+        client_connected: (userConfig.messages as Record<string, string> | undefined)?.client_connected ?? DEFAULT_CONFIG.messages.client_connected,
       },
       sounds: {
-        permission: userConfig.sounds?.permission ?? DEFAULT_CONFIG.sounds.permission,
-        complete: userConfig.sounds?.complete ?? DEFAULT_CONFIG.sounds.complete,
-        subagent_complete: userConfig.sounds?.subagent_complete ?? DEFAULT_CONFIG.sounds.subagent_complete,
-        error: userConfig.sounds?.error ?? DEFAULT_CONFIG.sounds.error,
-        question: userConfig.sounds?.question ?? DEFAULT_CONFIG.sounds.question,
-        interrupted: userConfig.sounds?.interrupted ?? DEFAULT_CONFIG.sounds.interrupted,
-        user_cancelled: userConfig.sounds?.user_cancelled ?? DEFAULT_CONFIG.sounds.user_cancelled,
-        plan_exit: userConfig.sounds?.plan_exit ?? DEFAULT_CONFIG.sounds.plan_exit,
-        session_started: userConfig.sounds?.session_started ?? DEFAULT_CONFIG.sounds.session_started,
-        user_message: userConfig.sounds?.user_message ?? DEFAULT_CONFIG.sounds.user_message,
-        client_connected: userConfig.sounds?.client_connected ?? DEFAULT_CONFIG.sounds.client_connected,
+        permission: (userConfig.sounds as Record<string, string | null> | undefined)?.permission ?? DEFAULT_CONFIG.sounds.permission,
+        complete: (userConfig.sounds as Record<string, string | null> | undefined)?.complete ?? DEFAULT_CONFIG.sounds.complete,
+        subagent_complete: (userConfig.sounds as Record<string, string | null> | undefined)?.subagent_complete ?? DEFAULT_CONFIG.sounds.subagent_complete,
+        error: (userConfig.sounds as Record<string, string | null> | undefined)?.error ?? DEFAULT_CONFIG.sounds.error,
+        question: (userConfig.sounds as Record<string, string | null> | undefined)?.question ?? DEFAULT_CONFIG.sounds.question,
+        interrupted: (userConfig.sounds as Record<string, string | null> | undefined)?.interrupted ?? DEFAULT_CONFIG.sounds.interrupted,
+        user_cancelled: (userConfig.sounds as Record<string, string | null> | undefined)?.user_cancelled ?? DEFAULT_CONFIG.sounds.user_cancelled,
+        plan_exit: (userConfig.sounds as Record<string, string | null> | undefined)?.plan_exit ?? DEFAULT_CONFIG.sounds.plan_exit,
+        session_started: (userConfig.sounds as Record<string, string | null> | undefined)?.session_started ?? DEFAULT_CONFIG.sounds.session_started,
+        user_message: (userConfig.sounds as Record<string, string | null> | undefined)?.user_message ?? DEFAULT_CONFIG.sounds.user_message,
+        client_connected: (userConfig.sounds as Record<string, string | null> | undefined)?.client_connected ?? DEFAULT_CONFIG.sounds.client_connected,
       },
       volumes: {
-        permission: parseVolume(userConfig.volumes?.permission, DEFAULT_CONFIG.volumes.permission),
-        complete: parseVolume(userConfig.volumes?.complete, DEFAULT_CONFIG.volumes.complete),
+        permission: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.permission, DEFAULT_CONFIG.volumes.permission),
+        complete: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.complete, DEFAULT_CONFIG.volumes.complete),
         subagent_complete: parseVolume(
-          userConfig.volumes?.subagent_complete,
+          (userConfig.volumes as Record<string, unknown> | undefined)?.subagent_complete,
           DEFAULT_CONFIG.volumes.subagent_complete
         ),
-        error: parseVolume(userConfig.volumes?.error, DEFAULT_CONFIG.volumes.error),
-        question: parseVolume(userConfig.volumes?.question, DEFAULT_CONFIG.volumes.question),
-        interrupted: parseVolume(userConfig.volumes?.interrupted, DEFAULT_CONFIG.volumes.interrupted),
-        user_cancelled: parseVolume(userConfig.volumes?.user_cancelled, DEFAULT_CONFIG.volumes.user_cancelled),
-        plan_exit: parseVolume(userConfig.volumes?.plan_exit, DEFAULT_CONFIG.volumes.plan_exit),
-        session_started: parseVolume(userConfig.volumes?.session_started, DEFAULT_CONFIG.volumes.session_started),
-        user_message: parseVolume(userConfig.volumes?.user_message, DEFAULT_CONFIG.volumes.user_message),
-        client_connected: parseVolume(userConfig.volumes?.client_connected, DEFAULT_CONFIG.volumes.client_connected),
+        error: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.error, DEFAULT_CONFIG.volumes.error),
+        question: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.question, DEFAULT_CONFIG.volumes.question),
+        interrupted: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.interrupted, DEFAULT_CONFIG.volumes.interrupted),
+        user_cancelled: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.user_cancelled, DEFAULT_CONFIG.volumes.user_cancelled),
+        plan_exit: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.plan_exit, DEFAULT_CONFIG.volumes.plan_exit),
+        session_started: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.session_started, DEFAULT_CONFIG.volumes.session_started),
+        user_message: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.user_message, DEFAULT_CONFIG.volumes.user_message),
+        client_connected: parseVolume((userConfig.volumes as Record<string, unknown> | undefined)?.client_connected, DEFAULT_CONFIG.volumes.client_connected),
       },
     }
   } catch {
     return {
       ...DEFAULT_CONFIG,
-      telegram: parseTelegramConfig(configPath),
+      telegram: parseTelegramConfig(),
     }
   }
 }

@@ -47,17 +47,29 @@ function keypress(name: string, sequence?: string) {
   }
 }
 
+type PromptProps = {
+  title: string
+  value?: string
+  onConfirm?: (value: string) => void
+  onCancel?: () => void
+}
+
 function createApi(initialRoute: { name: string; params?: Record<string, unknown> } = { name: "home" }) {
   let currentRoute = initialRoute
   let commandCallback: (() => any[]) | undefined
   let routes: Array<{ name: string; render: () => unknown }> = []
   let dialogProps: DialogProps | undefined
+  let promptProps: PromptProps | undefined
   let disposeLifecycle: (() => void) | undefined
 
   const keyInput = new EventEmitter()
   const commandDispose = mock(() => {})
   const routeDispose = mock(() => {})
   const lifecycleDispose = mock(() => {})
+  const dialogClear = mock(() => {})
+  const dialogReplace = mock((render: () => unknown) => {
+    render()
+  })
 
   const api = {
     command: {
@@ -83,7 +95,19 @@ function createApi(initialRoute: { name: string; params?: Record<string, unknown
         dialogProps = props
         return props
       }),
+      DialogPrompt: mock((props: PromptProps) => {
+        promptProps = props
+        return props
+      }),
+      DialogConfirm: mock((props: { onConfirm?: () => void }) => {
+        props.onConfirm?.()
+        return props
+      }),
       toast: mock(() => {}),
+      dialog: {
+        replace: dialogReplace,
+        clear: dialogClear,
+      },
     },
     renderer: {
       keyInput,
@@ -122,6 +146,11 @@ function createApi(initialRoute: { name: string; params?: Record<string, unknown
     dispose() {
       disposeLifecycle?.()
     },
+    promptProps() {
+      return promptProps
+    },
+    dialogReplace,
+    dialogClear,
   }
 }
 
@@ -172,7 +201,7 @@ describe("Telegram TUI", () => {
     expect(readRawConfig().events.complete.telegram).toBe(false)
   })
 
-  test("Enter does nothing for focused disabled settings", async () => {
+  test("Enter opens the bot token prompt and saves a valid token", async () => {
     writeRawConfig({ telegram: { enabled: false } })
     const runtime = createApi()
 
@@ -181,11 +210,15 @@ describe("Telegram TUI", () => {
     const props = runtime.renderTelegram()
     const option = props.options.find((candidate) => candidate.value === "telegram.botToken")
 
-    expect(option?.disabled).toBe(true)
+    expect(option?.disabled).toBeUndefined()
     props.onMove?.(option!)
     runtime.keyInput.emit("keypress", keypress("enter", "\r"))
 
-    expect(readRawConfig().telegram.enabled).toBe(false)
+    expect(runtime.dialogReplace).toHaveBeenCalled()
+    runtime.promptProps()?.onConfirm?.("123456:test-token")
+
+    expect(readRawConfig().telegram.botToken).toBe("123456:test-token")
+    expect(runtime.dialogClear).toHaveBeenCalled()
   })
 
   test("Escape exits Telegram settings to the previous route", async () => {

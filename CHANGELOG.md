@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] - 2026-05-21
+
+### Changed
+
+- **Breaking:** Telegram bot token, allowlists, and long-polling are stored in `opencode-notifier.json` instead of `opencode-notifier.env`.
+- One-time migration imports legacy `opencode-notifier.env` into JSON and renames the env file to `opencode-notifier.env.migrated`.
+- TUI can edit bot token, allowlists, and long polling via prompts (token value is validated and hidden in the settings list).
+
+### Removed
+
+- `TELEGRAM_*` env loading and `OPENCODE_NOTIFIER_ENV_PATH`
+- `.env.example` (use the `telegram` block in README instead)
+
 ## [0.1.5] - 2026-05-21
 
 ### Added

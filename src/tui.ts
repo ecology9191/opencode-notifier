@@ -1,17 +1,15 @@
 import type { EventType, NotifierConfig } from "./config"
-import { getConfigPath, getEnvPath, loadConfig } from "./config"
-import { setTelegramEnabled, setTelegramEventEnabled } from "./tui-config"
-
-type TuiElement = unknown
-
-type TuiCommand = {
-  title: string
-  value: string
-  description?: string
-  category?: string
-  keybind?: string
-  onSelect?: () => void
-}
+import { getConfigPath, loadConfig } from "./config"
+import {
+  setTelegramAuthorizedChatIds,
+  setTelegramAuthorizedChatIdsFromString,
+  setTelegramAuthorizedUserIds,
+  setTelegramAuthorizedUserIdsFromString,
+  setTelegramBotToken,
+  setTelegramEnabled,
+  setTelegramEventEnabled,
+  setTelegramLongPolling,
+} from "./tui-config"
 
 type TuiDialogSelectOption = {
   title: string
@@ -34,12 +32,21 @@ type TuiKeyEvent = {
   preventDefault?: () => void
 }
 
+type TuiCommand = {
+  title: string
+  value: string
+  description?: string
+  category?: string
+  keybind?: string
+  onSelect?: () => void
+}
+
 type TuiApi = {
   command: {
     register(cb: () => TuiCommand[]): () => void
   }
   route: {
-    register(routes: Array<{ name: string; render: (input?: { params?: Record<string, unknown> }) => TuiElement }>): () => void
+    register(routes: Array<{ name: string; render: (input?: { params?: Record<string, unknown> }) => unknown }>): () => void
     navigate(name: string, params?: Record<string, unknown>): void
     readonly current?: TuiRouteCurrent
   }
@@ -51,8 +58,26 @@ type TuiApi = {
       onMove?: (option: TuiDialogSelectOption) => void
       onSelect?: (option: TuiDialogSelectOption) => void
       current?: string
-    }): TuiElement
+    }): unknown
+    DialogPrompt(props: {
+      title: string
+      description?: () => unknown
+      placeholder?: string
+      value?: string
+      onConfirm?: (value: string) => void
+      onCancel?: () => void
+    }): unknown
+    DialogConfirm(props: {
+      title: string
+      message: string
+      onConfirm?: () => void
+      onCancel?: () => void
+    }): unknown
     toast(input: { variant?: "info" | "success" | "warning" | "error"; title?: string; message: string; duration?: number }): void
+    dialog: {
+      replace: (render: () => unknown, onClose?: () => void) => void
+      clear: () => void
+    }
   }
   renderer?: {
     keyInput?: {
@@ -78,13 +103,6 @@ const PALETTE_VALUE = "palette.telegram"
 const ANSI_RESET = "\x1b[0m"
 const ANSI_BRIGHT_GREEN = "\x1b[92m"
 const ANSI_BRIGHT_RED = "\x1b[91m"
-
-const TELEGRAM_ENV_VARS = [
-  "TELEGRAM_BOT_TOKEN",
-  "TELEGRAM_LONG_POLLING",
-  "TELEGRAM_AUTHORIZED_USER_IDS",
-  "TELEGRAM_AUTHORIZED_CHAT_IDS",
-] as const
 
 const EVENT_TYPES: EventType[] = [
   "permission",
@@ -124,12 +142,73 @@ function showSavedToast(api: TuiApi, message: string): void {
   })
 }
 
-function showErrorToast(api: TuiApi): void {
+function showErrorToast(api: TuiApi, message?: string): void {
   api.ui.toast({
     variant: "error",
     title: "Telegram settings not saved",
-    message: `Could not write ${getConfigPath()}`,
+    message: message ?? `Could not write ${getConfigPath()}`,
   })
+}
+
+function returnToSettings(api: TuiApi): void {
+  api.ui.dialog.clear()
+  api.route.navigate(ROUTE_NAME)
+}
+
+function openPrompt(
+  api: TuiApi,
+  props: {
+    title: string
+    placeholder?: string
+    value?: string
+    onConfirm: (value: string) => void
+  }
+): void {
+  api.ui.dialog.replace(
+    () => api.ui.DialogPrompt({
+      title: props.title,
+      placeholder: props.placeholder,
+      value: props.value ?? "",
+      onConfirm: (value) => {
+        try {
+          props.onConfirm(value)
+          returnToSettings(api)
+        } catch (error) {
+          showErrorToast(api, error instanceof Error ? error.message : String(error))
+          returnToSettings(api)
+        }
+      },
+      onCancel: () => returnToSettings(api),
+    }),
+    () => returnToSettings(api)
+  )
+}
+
+function openConfirm(
+  api: TuiApi,
+  props: {
+    title: string
+    message: string
+    onConfirm: () => void
+  }
+): void {
+  api.ui.dialog.replace(
+    () => api.ui.DialogConfirm({
+      title: props.title,
+      message: props.message,
+      onConfirm: () => {
+        try {
+          props.onConfirm()
+          returnToSettings(api)
+        } catch {
+          showErrorToast(api)
+          returnToSettings(api)
+        }
+      },
+      onCancel: () => returnToSettings(api),
+    }),
+    () => returnToSettings(api)
+  )
 }
 
 function toggleTelegram(api: TuiApi, config: NotifierConfig): void {
@@ -137,6 +216,17 @@ function toggleTelegram(api: TuiApi, config: NotifierConfig): void {
   try {
     setTelegramEnabled(enabled)
     showSavedToast(api, `Telegram ${status(enabled).toLowerCase()}.`)
+    api.route.navigate(ROUTE_NAME)
+  } catch {
+    showErrorToast(api)
+  }
+}
+
+function toggleLongPolling(api: TuiApi, config: NotifierConfig): void {
+  const enabled = !config.telegram.longPolling
+  try {
+    setTelegramLongPolling(enabled)
+    showSavedToast(api, `Long polling ${enabled ? "on" : "off"}.`)
     api.route.navigate(ROUTE_NAME)
   } catch {
     showErrorToast(api)
@@ -160,49 +250,107 @@ function telegramOptions(api: TuiApi): TuiDialogSelectOption[] {
     {
       title: `Telegram: ${coloredStatus(config.telegram.enabled)}`,
       value: "telegram.enabled",
-      description: "Toggle persisted telegram.enabled in opencode-notifier JSON config.",
+      description: "Toggle telegram.enabled in opencode-notifier.json.",
       category: "Status",
       onSelect: () => toggleTelegram(api, config),
     },
     {
       title: `Bot token: ${config.telegram.botToken ? "Present" : "Missing or invalid"}`,
       value: "telegram.botToken",
-      description: "Loaded from TELEGRAM_BOT_TOKEN. Token value is validated and hidden.",
-      category: "Status",
-      disabled: true,
+      description: "Set or replace the bot token (validated, never shown in this list).",
+      category: "Secrets",
+      onSelect: () => openPrompt(api, {
+        title: "Telegram bot token",
+        placeholder: "123456789:your-bot-token",
+        onConfirm: (value) => {
+          setTelegramBotToken(value.trim() === "" ? null : value.trim())
+          showSavedToast(api, "Bot token updated.")
+        },
+      }),
+    },
+    {
+      title: "Clear bot token",
+      value: "telegram.botToken.clear",
+      description: "Remove the stored bot token from config.",
+      category: "Secrets",
+      onSelect: () => openConfirm(api, {
+        title: "Clear bot token",
+        message: "Remove the Telegram bot token from opencode-notifier.json?",
+        onConfirm: () => {
+          setTelegramBotToken(null)
+          showSavedToast(api, "Bot token cleared.")
+        },
+      }),
     },
     {
       title: `Long polling: ${config.telegram.longPolling ? "On" : "Off"}`,
       value: "telegram.longPolling",
-      description: "Informational value loaded from TELEGRAM_LONG_POLLING.",
+      description: "Informational until inbound Telegram commands are implemented.",
       category: "Status",
-      disabled: true,
+      onSelect: () => toggleLongPolling(api, config),
     },
     {
       title: `Authorized users: ${config.telegram.authorizedUserIds.length}`,
       value: "telegram.authorizedUserIds",
-      description: "Loaded from TELEGRAM_AUTHORIZED_USER_IDS.",
+      description: "Comma- or space-separated positive user IDs.",
       category: "Authorization",
-      disabled: true,
+      onSelect: () => openPrompt(api, {
+        title: "Authorized user IDs",
+        placeholder: "123456789, 987654321",
+        value: config.telegram.authorizedUserIds.join(", "),
+        onConfirm: (value) => {
+          setTelegramAuthorizedUserIdsFromString(value)
+          showSavedToast(api, "Authorized user IDs updated.")
+        },
+      }),
+    },
+    {
+      title: "Clear authorized users",
+      value: "telegram.authorizedUserIds.clear",
+      description: "Remove all authorized user IDs.",
+      category: "Authorization",
+      onSelect: () => openConfirm(api, {
+        title: "Clear authorized users",
+        message: "Remove all authorized user IDs?",
+        onConfirm: () => {
+          setTelegramAuthorizedUserIds([])
+          showSavedToast(api, "Authorized user IDs cleared.")
+        },
+      }),
     },
     {
       title: `Authorized chats: ${config.telegram.authorizedChatIds.length}`,
       value: "telegram.authorizedChatIds",
-      description: "Loaded from TELEGRAM_AUTHORIZED_CHAT_IDS.",
+      description: "Comma- or space-separated chat IDs (negative group IDs allowed).",
       category: "Authorization",
-      disabled: true,
+      onSelect: () => openPrompt(api, {
+        title: "Authorized chat IDs",
+        placeholder: "-1001234567890, 42",
+        value: config.telegram.authorizedChatIds.join(", "),
+        onConfirm: (value) => {
+          setTelegramAuthorizedChatIdsFromString(value)
+          showSavedToast(api, "Authorized chat IDs updated.")
+        },
+      }),
+    },
+    {
+      title: "Clear authorized chats",
+      value: "telegram.authorizedChatIds.clear",
+      description: "Remove all authorized chat IDs.",
+      category: "Authorization",
+      onSelect: () => openConfirm(api, {
+        title: "Clear authorized chats",
+        message: "Remove all authorized chat IDs?",
+        onConfirm: () => {
+          setTelegramAuthorizedChatIds([])
+          showSavedToast(api, "Authorized chat IDs cleared.")
+        },
+      }),
     },
     {
       title: `Config file: ${getConfigPath()}`,
       value: "paths.config",
-      description: "Non-secret Telegram toggles are persisted here.",
-      category: "Paths",
-      disabled: true,
-    },
-    {
-      title: `Env file: ${getEnvPath()}`,
-      value: "paths.env",
-      description: `Variables: ${TELEGRAM_ENV_VARS.join(", ")}`,
+      description: "All Telegram settings, including secrets, are stored here.",
       category: "Paths",
       disabled: true,
     },
@@ -248,6 +396,7 @@ export const tui: TuiPlugin = async (api) => {
   }
 
   const closeTelegramSettings = () => {
+    api.ui.dialog.clear()
     const route = previousRoute?.name && previousRoute.name !== ROUTE_NAME ? previousRoute : { name: "home" }
     api.route.navigate(route.name, route.params)
   }
