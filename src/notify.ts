@@ -284,6 +284,8 @@ export async function sendNotification(
   }
 
   if ((platform === "Linux" || platform.match(/BSD$/)) && !isWsl) {
+    if (!process.env.DBUS_SESSION_BUS_ADDRESS) return
+
     if (onClick) {
       if (linuxGrouping) {
         if (linuxNotifySendSupportsReplace === null) {

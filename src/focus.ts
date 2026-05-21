@@ -138,9 +138,9 @@ function getLinuxWaylandActiveWindowId(): string | null {
 
 function getWindowsActiveWindowId(): string | null {
   const script = `$type=Add-Type -Name FocusHelper -Namespace OpenCodeNotifier -MemberDefinition '[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();' -PassThru; $type::GetForegroundWindow()`;
-  let windowId = execFileWithTimeout("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], 1000)
+  let windowId = execFileWithTimeout("powershell", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], 1000)
   if (!windowId)
-    windowId = execFileWithTimeout("pwsh", ["-NoProfile", "-NonInteractive", "-Command", script], 1000)
+    windowId = execFileWithTimeout("pwsh", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], 1000)
   return windowId
 }
 
@@ -151,6 +151,14 @@ function getMacOSActiveWindowId(): string | null {
 }
 
 function getMacOSFrontmostAppName(): string | null {
+  // Detect frontmost app regardless of activation policy
+  // (apps excluded from Dock and App Switcher)
+  const lsappinfo = execWithTimeout(
+    `lsappinfo info -only name \`lsappinfo front\` | sed 's/.*="\\([^"]*\\)".*/\\1/'`
+  )
+  if (lsappinfo) return lsappinfo
+
+  // Fallback to System Events if lsappinfo is unavailable
   return execWithTimeout(
     `osascript -e 'tell application "System Events" to return name of first application process whose frontmost is true'`
   )
