@@ -20,7 +20,9 @@
     "build": "bun build src/index.ts src/server.ts src/tui.ts --outdir dist --target node --external node-notifier",
     "prepublishOnly": "bun run build",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "validate:fast": "npm run typecheck && npm run test",
+    "validate": "npm run validate:fast && npm run build"
   },
   "keywords": [
     "opencode",
